@@ -26,7 +26,7 @@ Este proyecto implementa un **Detector Avanzado de Emociones Faciales en Tiempo 
 
 ---
 
-## 🗃️ Estructura del Proyecto
+## 🗃️ Demostracion Del Proyecto 
 
 
 
