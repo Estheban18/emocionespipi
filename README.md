@@ -1,6 +1,6 @@
 ﻿# emocionespipi
 
-# Advanced Emotion Detector
+# Detector De Emociones 
 
 Este proyecto implementa un **Detector Avanzado de Emociones Faciales en Tiempo Real**, combinando tecnologías modernas como OpenCV, YOLO, y Keras. Utiliza modelos preentrenados Caffe para detección facial y clasificación emocional, y está optimizado para utilizar **GPU con CUDA** si está disponible.
 
