@@ -1,103 +1,194 @@
-# Importamos las librerias
-from deepface import DeepFace
-import cv2
+import cv2  
 import mediapipe as mp
+import numpy as np
 
-# Inicializamos mediapipe face detection
-detros = mp.solutions.face_detection
-rostros = detros.FaceDetection(min_detection_confidence=0.8, model_selection=0)
-dibujorostro = mp.solutions.drawing_utils
+# Configuración de YOLO
+def setup_yolo():
+    net = cv2.dnn.readNet("yolov3-tiny.weights", "yolov3-tiny.cfg")
+    layer_names = net.getLayerNames()
+    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+    return net, output_layers
 
-# Intentamos abrir la cámara
+# Inicializar MediaPipe Face Mesh
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+# Iniciar cámara
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-if not cap.isOpened():
-    print("No se pudo abrir la cámara")
-    exit()
+# Cargar YOLO
+yolo_net, output_layers = setup_yolo()
 
-# Leemos imagen de superposición
-img_overlay = cv2.imread("img.png")
-if img_overlay is not None:
-    img_overlay = cv2.resize(img_overlay, (0, 0), fx=0.18, fy=0.18)
-    ani, ali, _ = img_overlay.shape
-else:
-    print("No se encontró img.png, se omite la superposición")
-    img_overlay = None
+# Diccionario de emociones con umbrales y colores
+EMOTIONS = {
+    "feliz": {
+        "threshold": 0.03,
+        "color": (0, 255, 0)  # Verde
+    },
+    "sorprendido": {
+        "threshold": 0.015,
+        "color": (255, 255, 0)  # Amarillo
+    },
+    "enojado": {
+        "threshold": -0.01,
+        "color": (0, 0, 255)  # Rojo
+    },
+    "triste": {
+        "threshold": 0.02,
+        "color": (255, 0, 0)  # Azul
+    },
+    "neutral": {
+        "threshold": 0.01,
+        "color": (255, 255, 255)  # Blanco
+    }
+}
 
-# Empezamos el bucle principal
-while True:
-    ret, frame = cap.read()
-    if not ret or frame is None:
-        print("No se pudo capturar un frame. Revisa la cámara.")
-        break
+def detect_emotion(landmarks):
+    # Puntos clave para análisis de emociones
+    # Labios
+    upper_lip = landmarks[13].y
+    lower_lip = landmarks[14].y
+    lip_distance = abs(upper_lip - lower_lip)
+    
+    # Cejas
+    left_eyebrow = landmarks[159].y
+    right_eyebrow = landmarks[386].y
+    eyebrow_diff = abs(left_eyebrow - right_eyebrow)
+    
+    # Ojos
+    left_eye = landmarks[145].y - landmarks[159].y
+    right_eye = landmarks[374].y - landmarks[386].y
+    eye_openness = (left_eye + right_eye) / 2
+    
+    # Frente
+    forehead = landmarks[10].y
+    nose_tip = landmarks[4].y
+    vertical_ratio = nose_tip - forehead
+    
+    # Determinar emoción basada en los umbrales
+    if lip_distance > EMOTIONS["feliz"]["threshold"]:
+        return "feliz"
+    elif eyebrow_diff > EMOTIONS["sorprendido"]["threshold"]:
+        return "sorprendido"
+    elif vertical_ratio < EMOTIONS["enojado"]["threshold"]:
+        return "enojado"
+    elif eye_openness < EMOTIONS["triste"]["threshold"]:
+        return "triste"
+    else:
+        return "neutral"
 
-    # Convertimos a RGB para DeepFace y mediapipe
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+try:
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success:
+            print("Error al capturar frame")
+            continue
 
-    # Procesamos detección de rostros con mediapipe
-    resrostros = rostros.process(rgb)
+        height, width = frame.shape[:2]
+        
+        # Detección con YOLO
+        blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+        yolo_net.setInput(blob)
+        outs = yolo_net.forward(output_layers)
+        
+        # Procesar detecciones
+        boxes = []
+        confidences = []
+        
+        for out in outs:
+            for detection in out:
+                scores = detection[5:]
+                class_id = np.argmax(scores)
+                confidence = scores[class_id]
+                
+                if confidence > 0.5 and class_id == 0:  # Solo personas
+                    center_x = int(detection[0] * width)
+                    center_y = int(detection[1] * height)
+                    w = int(detection[2] * width)
+                    h = int(detection[3] * height)
+                    x = int(center_x - w / 2)
+                    y = int(center_y - h / 2)
+                    boxes.append([x, y, w, h])
+                    confidences.append(float(confidence))
+        
+        # Eliminar detecciones solapadas
+        indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+        
+        # Procesar cada rostro detectado
+        for i in indices:
+            x, y, w, h = boxes[i]
+            
+            # Dibujar bounding box (rojo)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            
+            # Recortar región del rostro
+            face_roi = frame[y:y+h, x:x+w]
+            if face_roi.size == 0:
+                continue
+                
+            # Convertir a RGB para MediaPipe
+            face_rgb = cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB)
+            
+            # Análisis con MediaPipe
+            results = face_mesh.process(face_rgb)
+            
+            if results.multi_face_landmarks:
+                for face_landmarks in results.multi_face_landmarks:
+                    # Convertir landmarks a coordenadas
+                    landmarks = []
+                    for landmark in face_landmarks.landmark:
+                        lx = x + int(landmark.x * w)
+                        ly = y + int(landmark.y * h)
+                        landmarks.append(mp.solutions.face_mesh.NormalizedLandmark(x=landmark.x, y=landmark.y))
+                    
+                    # Detectar emoción
+                    emotion = detect_emotion(landmarks)
+                    emotion_color = EMOTIONS[emotion]["color"]
+                    
+                    # Dibujar contorno facial del color de la emoción
+                    face_outline = [10, 338, 297, 332, 284, 251, 389, 356, 454, 
+                                  323, 361, 288, 397, 365, 379, 378, 400, 377, 
+                                  152, 148, 176, 149, 150, 136, 172, 58, 132, 
+                                  93, 234, 127, 162, 21, 54, 103, 67, 109]
+                    
+                    points = []
+                    for idx in face_outline:
+                        point = (x + int(landmarks[idx].x * w), y + int(landmarks[idx].y * h))
+                        points.append(point)
+                    
+                    # Dibujar polígono del rostro
+                    cv2.polylines(frame, [np.array(points)], True, emotion_color, 2)
+                    
+                    # Mostrar información
+                    cv2.putText(frame, f"Emocion: {emotion}", (x, y-10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, emotion_color, 2)
+                    
+                    # Dibujar puntos clave de expresiones
+                    keypoints = {
+                        "labios": [13, 14],
+                        "cejas": [159, 386],
+                        "ojos": [145, 374]
+                    }
+                    
+                    for group, indices in keypoints.items():
+                        for idx in indices:
+                            point = (x + int(landmarks[idx].x * w), y + int(landmarks[idx].y * h))
+                            cv2.circle(frame, point, 3, emotion_color, -1)
 
-    # Si se detectan rostros
-    if resrostros.detections is not None:
-        for rostro in resrostros.detections:
-            # Bounding box
-            al, an, _ = frame.shape
-            box = rostro.location_data.relative_bounding_box
-            xi, yi = int(box.xmin * an), int(box.ymin * al)
-            w, h = int(box.width * an), int(box.height * al)
-            xf, yf = xi + w, yi + h
+        # Mostrar frame
+        cv2.imshow('Deteccion Facial con Analisis de Emociones', frame)
+        
+        # Salir con ESC
+        if cv2.waitKey(5) == 27:
+            break
 
-            # Dibujamos rectángulo
-            cv2.rectangle(frame, (xi, yi), (xf, yf), (255, 255, 0), 2)
-
-            # Superposición de imagen
-            if img_overlay is not None:
-                frame[10:ani + 10, 10:ali + 10] = img_overlay
-
-            # Análisis con DeepFace
-            info = DeepFace.analyze(rgb, actions=['age', 'gender', 'emotion'], enforce_detection=False)
-
-            # El resultado es una lista de diccionarios, tomamos el primero
-            info = info[0]
-
-            edad = info['age']
-            emociones = info['dominant_emotion']
-            gen = info['gender']
-
-
-            # Traducciones
-            traducciones = {
-                'Man': 'Hombre',
-                'Woman': 'Mujer',
-                'angry': 'enojado/enojada',
-                'disgust': 'disgustado/disgustada',
-                'fear': 'miedoso/miedosa',
-                'happy': 'feliz',
-                'sad': 'triste',
-                'surprise': 'sorprendido/sorprendida',
-                'neutral': 'neutral'
-            }
-
-            # Revisa que gen sea un string
-            if isinstance(gen, dict):
-                gen = gen.get('gender', 'desconocido')
-
-            # Después aplica las traducciones
-            gen = traducciones.get(gen, gen)
-
-
-            # Mostramos la información
-            cv2.putText(frame, f"{gen}", (65, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-            cv2.putText(frame, f"{edad}", (75, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-            cv2.putText(frame, f"{emociones}", (75, 135), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-
-    # Mostramos el frame
-    cv2.imshow("Detección de Edad y Características", frame)
-
-    # Salimos con la tecla Esc
-    if cv2.waitKey(5) == 27:
-        break
-
-# Cerramos recursos
-cap.release()
-cv2.destroyAllWindows()
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
