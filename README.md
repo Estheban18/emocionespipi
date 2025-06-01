@@ -30,6 +30,7 @@ Este proyecto implementa un **Detector Avanzado de Emociones Faciales en Tiempo 
 
 
 
-![Imagen de WhatsApp 2025-05-30 a las 11 29 49_8545ad41](https://github.com/user-attachments/assets/b78817a0-f510-4377-868f-ae5105929d65)
+![ChatGPT Image Jun 1, 2025, 06_29_54 PM](https://github.com/user-attachments/assets/1c7e0322-2f92-4358-ad88-d33af58520be)
+
 
   
